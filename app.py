@@ -198,13 +198,11 @@
 import sys
 import asyncio
 import os
-import requests
 import tempfile
 import subprocess
 from io import BytesIO
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
 from motor.motor_asyncio import AsyncIOMotorClient
 from ultralytics import YOLO
 from PIL import Image
@@ -213,9 +211,9 @@ import cv2
 from bson import ObjectId
 from bson.binary import Binary
 import imageio_ffmpeg as ffmpeg
+import requests
 
 # --------------------- CONFIG ------------------------
-RUN_AS_SERVICE = os.environ.get("RUN_AS_SERVICE", "false").lower() in ("1", "true", "yes")
 FASTAPI_PORT = int(os.environ.get("PORT", 8000))  # Render sets PORT env
 MONGO_URI = os.environ.get("MONGO_URI")
 DATABASE_NAME = os.environ.get("DATABASE_NAME", "test")
@@ -235,45 +233,33 @@ _MODEL = None
 # --------------------- MODEL ------------------------
 def download_weights_if_missing():
     if os.path.exists(WEIGHTS_PATH):
-        print(f"✅ Model exists at: {WEIGHTS_PATH}")
         return True
     if not MODEL_WEIGHTS_URL:
-        print(f"❌ Weights not found and no MODEL_WEIGHTS_URL provided.")
+        print("No MODEL_WEIGHTS_URL provided")
         return False
-    try:
-        os.makedirs(os.path.dirname(WEIGHTS_PATH), exist_ok=True)
-        print(f"⬇️ Downloading model from {MODEL_WEIGHTS_URL} ...")
-        r = requests.get(MODEL_WEIGHTS_URL, stream=True, timeout=60)
-        r.raise_for_status()
-        with open(WEIGHTS_PATH, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print("✅ Model downloaded successfully.")
-        return True
-    except Exception as e:
-        print(f"❌ Error downloading model: {e}")
-        return False
+    os.makedirs(os.path.dirname(WEIGHTS_PATH), exist_ok=True)
+    r = requests.get(MODEL_WEIGHTS_URL, stream=True, timeout=60)
+    r.raise_for_status()
+    with open(WEIGHTS_PATH, "wb") as f:
+        for chunk in r.iter_content(8192):
+            f.write(chunk)
+    return True
 
 def load_model():
     global _MODEL
-    if _MODEL is not None:
-        return _MODEL
-    if not os.path.exists(WEIGHTS_PATH):
-        ok = download_weights_if_missing()
-        if not ok:
-            print("❌ Cannot load model. Exiting.")
-            sys.exit(1)
-    _MODEL = YOLO(WEIGHTS_PATH)
-    print("🧠 YOLO model loaded.")
+    if _MODEL is None:
+        if not os.path.exists(WEIGHTS_PATH):
+            download_weights_if_missing()
+        _MODEL = YOLO(WEIGHTS_PATH)
+        print("🧠 YOLO model loaded.")
     return _MODEL
 
 # --------------------- MONGO HELPERS ------------------------
 async def fetch_file_from_mongo(file_id):
     try:
-        obj_id = ObjectId(file_id)
+        doc = await collection.find_one({"_id": ObjectId(file_id)})
     except:
         return None, None
-    doc = await collection.find_one({"_id": obj_id})
     if not doc or "data" not in doc:
         return None, None
     return bytes(doc["data"]), doc.get("mimetype", "")
@@ -318,7 +304,6 @@ async def process_video(file_id, model):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     out = cv2.VideoWriter(tmp_out, cv2.VideoWriter_fourcc(*"XVID"), fps, (width, height))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -353,13 +338,6 @@ async def run_process(file_id, file_type):
     else:
         return False
 
-async def cli_main():
-    if len(sys.argv) < 3:
-        print("Usage: python app.py <file_id> <file_type>")
-        sys.exit(1)
-    ok = await run_process(sys.argv[1], sys.argv[2])
-    sys.exit(0 if ok else 2)
-
 # --------------------- FASTAPI ------------------------
 app = FastAPI(title="YOLO Processing Service")
 
@@ -369,7 +347,8 @@ class ProcessRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    load_model()
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, load_model)
     print("Service startup complete.")
 
 @app.get("/")
@@ -387,10 +366,18 @@ async def process_endpoint(payload: ProcessRequest):
         raise HTTPException(status_code=500, detail="Processing failed")
     return {"status": "ok", "fileId": payload.fileId}
 
-# --------------------- ENTRY POINT ------------------------
+# --------------------- CLI ENTRY ------------------------
+async def cli_main():
+    if len(sys.argv) < 3:
+        print("Usage: python app.py <file_id> <file_type>")
+        sys.exit(1)
+    ok = await run_process(sys.argv[1], sys.argv[2])
+    sys.exit(0 if ok else 2)
+
 if __name__ == "__main__":
-    if RUN_AS_SERVICE:
-        import uvicorn
-        uvicorn.run("app:app", host="0.0.0.0", port=FASTAPI_PORT, reload=False)
-    else:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cli", action="store_true", help="Run in CLI mode")
+    args = parser.parse_args()
+    if args.cli:
         asyncio.run(cli_main())
