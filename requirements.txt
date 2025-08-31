@@ -1,0 +1,17 @@
+ultralytics
+imageio_ffmpeg
+numpy
+opencv-python
+pillow
+matplotlib 
+opencv-python-headless 
+flask 
+flask-pymongo 
+flask-socketio 
+werkzeug 
+motor 
+pymongo
+requests
+fastapi
+uvicorn
+pydantic
