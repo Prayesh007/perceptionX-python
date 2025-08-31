@@ -195,6 +195,16 @@
 #         print("❌ Invalid file type. Use 'image' or 'video'.")
 
 # app.py
+
+try:
+    import requests
+except ModuleNotFoundError:
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+    import requests
+
+
 import sys
 import asyncio
 import os
